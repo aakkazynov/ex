@@ -1,0 +1,222 @@
+import pandas as pd
+import json
+import numpy as np
+
+def generate_webpage():
+    # 1. Read the provided Excel file
+    try:
+        df = pd.read_excel('download.xlsx')
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return
+
+    # Filter needed columns and drop rows with missing coordinates
+    df = df[['name_en', 'short_description_en', 'category', 'longitude', 'latitude', 'states_name_en']]
+    df = df.dropna(subset=['longitude', 'latitude'])
+    
+    # 2. Add supplementary travel data (GDP, Crime Rate, Flights from BOS, Pros/Cons)
+    # Using generalized country-level data based on recent global travel averages
+    def get_travel_stats(country):
+        # Sample travel profiles mapping. For a full production system, link an API (e.g., World Bank, Skyscanner)
+        profiles = {
+            'Italy': {'gdp': '$35,000', 'crime': 'Low (49.6)', 'cost': 'Moderate', 'flight': '$457 - $600', 'pros': 'Incredible history, food, extensive train network.', 'cons': 'High tourist crowds in summer, pickpocketing in major cities.'},
+            'France': {'gdp': '$43,000', 'crime': 'Moderate (57.2)', 'cost': 'High', 'flight': '$467 - $650', 'pros': 'World-class art, culinary experiences, diverse landscapes.', 'cons': 'Can be very expensive, language barrier outside tourist zones.'},
+            'United Kingdom': {'gdp': '$46,000', 'crime': 'Moderate (47.1)', 'cost': 'High', 'flight': '$328 - $685', 'pros': 'No language barrier, rich history, great public transit.', 'cons': 'High cost of living, unpredictable weather.'},
+            'Japan': {'gdp': '$39,000', 'crime': 'Very Low (22.1)', 'cost': 'High', 'flight': '$900 - $1,300', 'pros': 'Extremely safe, impeccable public transit, unique culture.', 'cons': 'Long flight from Boston, significant time zone difference.'},
+            'Iceland': {'gdp': '$69,000', 'crime': 'Very Low (18.0)', 'cost': 'Very High', 'flight': '$350 - $500', 'pros': 'Unmatched natural beauty, direct flights from BOS.', 'cons': 'Extreme cost of living, unpredictable harsh weather.'},
+            'Mexico': {'gdp': '$10,000', 'crime': 'High (38.0 Safety)', 'cost': 'Low', 'flight': '$250 - $450', 'pros': 'Highly affordable, rich culture, close proximity.', 'cons': 'Regional safety concerns, water quality issues.'}
+        }
+        
+        # Default fallback for countries not explicitly profiled
+        default = {
+            'gdp': 'Varies',
+            'crime': 'Check Local Advisory',
+            'cost': 'Varies',
+            'flight': '$700 - $1,200 (Avg. Global)',
+            'pros': 'Culturally enriching UNESCO recognized significance.',
+            'cons': 'Research local visa, health, and safety advisories prior to booking.'
+        }
+        return profiles.get(country, default)
+
+    # 3. Process records into JSON format for the front-end
+    sites = []
+    for _, row in df.iterrows():
+        stats = get_travel_stats(row['states_name_en'])
+        sites.append({
+            'name': row['name_en'],
+            'description': str(row['short_description_en']).strip('<p>').strip('</p>'),
+            'category': row['category'],
+            'lat': row['latitude'],
+            'lon': row['longitude'],
+            'country': row['states_name_en'],
+            'stats': stats
+        })
+
+    # Calculate category counts for the chart
+    category_counts = df['category'].value_counts().to_dict()
+
+    # 4. Construct the HTML, CSS, and JS template
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retirement World Tour - UNESCO Sites</title>
+    
+    <!-- Leaflet CSS for Map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    
+    <style>
+        :root {{
+            --bg-color: #f4f7f6;
+            --primary: #2c3e50;
+            --secondary: #18bc9c;
+            --panel-bg: #ffffff;
+        }}
+        body {{
+            margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color); color: var(--primary); display: flex; flex-direction: column; height: 100vh;
+        }}
+        header {{
+            background: var(--primary); color: white; padding: 15px 30px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }}
+        .main-container {{
+            display: flex; flex: 1; overflow: hidden;
+        }}
+        .map-section {{
+            flex: 2; position: relative;
+        }}
+        #map {{
+            height: 100%; width: 100%;
+        }}
+        .dashboard-section {{
+            flex: 1; background: var(--panel-bg); padding: 20px; overflow-y: auto;
+            box-shadow: -2px 0 5px rgba(0,0,0,0.05); display: flex; flex-direction: column; gap: 20px;
+        }}
+        .card {{
+            background: #fff; padding: 15px; border-radius: 8px; border: 1px solid #e1e8ed;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }}
+        .card h3 {{ margin-top: 0; color: var(--primary); border-bottom: 2px solid var(--secondary); padding-bottom: 5px; }}
+        canvas {{ max-height: 250px; width: 100%; }}
+        .stat-grid {{
+            display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+        }}
+        .stat-box {{
+            background: var(--bg-color); padding: 10px; border-radius: 5px; text-align: center;
+        }}
+        .stat-box strong {{ display: block; font-size: 0.85em; color: #7f8c8d; text-transform: uppercase; }}
+        .stat-box span {{ font-size: 1.1em; font-weight: bold; color: var(--primary); }}
+        .description-box {{ font-size: 0.9em; line-height: 1.5; color: #555; }}
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>🌍 The World Tour: A Year of Heritage</h1>
+        <p>Explore UNESCO sites to plan your ultimate retirement journey</p>
+    </header>
+
+    <div class="main-container">
+        <div class="map-section">
+            <div id="map"></div>
+        </div>
+        
+        <div class="dashboard-section">
+            <div class="card">
+                <h3>Heritage Distribution</h3>
+                <canvas id="categoryChart"></canvas>
+            </div>
+
+            <div class="card" id="site-dashboard">
+                <h3>Site Dashboard</h3>
+                <p><em>Select a dot on the map to view destination logistics.</em></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <script>
+        // Data injected from Python
+        const siteData = {json.dumps(sites)};
+        const categoryCounts = {json.dumps(categoryCounts)};
+
+        // 1. Initialize Map
+        const map = L.map('map').setView([20, 0], 2);
+        L.tileLayer('https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png', {{
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+        }}).addTo(map);
+
+        // 2. Populate Map Markers
+        const markers = L.featureGroup().addTo(map);
+        
+        siteData.forEach(site => {{
+            const markerColor = site.category === 'Cultural' ? '#e74c3c' : (site.category === 'Natural' ? '#2ecc71' : '#f1c40f');
+            
+            const circle = L.circleMarker([site.lat, site.lon], {{
+                radius: 5,
+                fillColor: markerColor,
+                color: '#fff',
+                weight: 1,
+                opacity: 1,
+                fillOpacity: 0.8
+            }});
+
+            circle.bindTooltip(`<strong>${{site.name}}</strong><br>${{site.country}}`);
+            
+            circle.on('click', () => {{
+                updateDashboard(site);
+            }});
+            
+            markers.addLayer(circle);
+        }});
+
+        // 3. Update Dashboard Function
+        function updateDashboard(site) {{
+            const dash = document.getElementById('site-dashboard');
+            dash.innerHTML = `
+                <h3>${{site.name}} (${{site.country}})</h3>
+                <div class="stat-grid">
+                    <div class="stat-box"><strong>BOS Flight Avg</strong><span>${{site.stats.flight}}</span></div>
+                    <div class="stat-box"><strong>Cost of Living</strong><span>${{site.stats.cost}}</span></div>
+                    <div class="stat-box"><strong>GDP per Capita</strong><span>${{site.stats.gdp}}</span></div>
+                    <div class="stat-box"><strong>Safety/Crime</strong><span>${{site.stats.crime}}</span></div>
+                </div>
+                <div class="description-box" style="margin-top: 15px;">
+                    <strong>Pros:</strong> ${{site.stats.pros}}<br><br>
+                    <strong>Cons:</strong> ${{site.stats.cons}}
+                </div>
+                <div class="description-box" style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 10px;">
+                    <strong>Site Info:</strong> ${{site.description.substring(0, 300)}}...
+                </div>
+            `;
+        }}
+
+        // 4. Initialize Chart.js
+        const ctx = document.getElementById('categoryChart').getContext('2d');
+        new Chart(ctx, {{
+            type: 'doughnut',
+            data: {{
+                labels: Object.keys(categoryCounts),
+                datasets: [{{
+                    data: Object.values(categoryCounts),
+                    backgroundColor: ['#e74c3c', '#2ecc71', '#f1c40f']
+                }}]
+            }},
+            options: {{ responsive: true, maintainAspectRatio: false }}
+        }});
+    </script>
+</body>
+</html>
+"""
+
+    # 5. Write to file
+    with open('unesco_dashboard.html', 'w', encoding='utf-8') as f:
+        f.write(html_content)
+    print("Successfully generated 'unesco_dashboard.html'. Open this file in your web browser.")
+
+if __name__ == "__main__":
+    generate_webpage()
